@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 
 import { LeadForm } from "@/components/lead-form";
 import { ReportView } from "@/components/report";
@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { Report } from "@/lib/types";
+import { checkLinkPath, runnableQueryUrl } from "@/lib/url";
 
 const STEPS = [
   "Opening the homepage",
@@ -29,12 +30,106 @@ const LOOKS_FOR = [
   "The title and description Google shows",
 ];
 
-export function Checker() {
-  const [url, setUrl] = useState("");
-  const [phase, setPhase] = useState<"idle" | "loading" | "error" | "done">("idle");
+declare global {
+  interface Window {
+    __nativeReplaceState?: History["replaceState"];
+  }
+}
+
+function rememberCheckInAddressBar(value: string) {
+  const current = new URL(window.location.href);
+  if (current.pathname === "/" && current.searchParams.get("url")?.trim() === value) return;
+  const replace = window.__nativeReplaceState ?? window.history.replaceState.bind(window.history);
+  replace(window.history.state, "", checkLinkPath(value));
+}
+
+type CheckPayload = (Report & { error?: string }) | null;
+
+const inflightChecks = new Map<string, Promise<{ ok: boolean; data: CheckPayload }>>();
+
+function requestCheck(url: string): Promise<{ ok: boolean; data: CheckPayload }> {
+  const existing = inflightChecks.get(url);
+  if (existing) return existing;
+  const promise = fetch("/api/check", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ url }),
+  })
+    .then(async (response) => {
+      const data = (await response.json().catch(() => null)) as CheckPayload;
+      return { ok: response.ok, data };
+    })
+    .finally(() => {
+      if (inflightChecks.get(url) === promise) inflightChecks.delete(url);
+    });
+  inflightChecks.set(url, promise);
+  return promise;
+}
+
+export function Checker({
+  initialUrl = "",
+  shell = false,
+}: {
+  initialUrl?: string;
+  shell?: boolean;
+}) {
+  const startingUrl = runnableQueryUrl(initialUrl) ?? "";
+  const [url, setUrl] = useState(startingUrl);
+  const [shareUrl, setShareUrl] = useState(startingUrl);
+  const [phase, setPhase] = useState<"idle" | "loading" | "error" | "done">(
+    startingUrl ? "loading" : "idle",
+  );
   const [step, setStep] = useState(0);
   const [error, setError] = useState("");
   const [report, setReport] = useState<Report | null>(null);
+  const autoRan = useRef<string | null>(null);
+  const requestSeq = useRef(0);
+
+  const runCheck = useCallback(async (raw: string) => {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      setPhase("error");
+      setError("Paste the clinic website address first.");
+      return;
+    }
+    const seq = ++requestSeq.current;
+    autoRan.current = trimmed;
+    setUrl(trimmed);
+    setShareUrl(trimmed);
+    setStep(0);
+    setPhase("loading");
+    setError("");
+    setReport(null);
+    rememberCheckInAddressBar(trimmed);
+    try {
+      const { ok, data } = await requestCheck(trimmed);
+      if (requestSeq.current !== seq) return;
+      if (!ok || !data || typeof data.score !== "number") {
+        setPhase("error");
+        setError(data?.error || "We couldn't check that site. Try again in a moment.");
+        return;
+      }
+      setReport(data);
+      setPhase("done");
+    } catch {
+      if (requestSeq.current !== seq) return;
+      setPhase("error");
+      setError("We couldn't check that site. Try again in a moment.");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (shell) return;
+    document.documentElement.removeAttribute("data-autocheck");
+  }, [shell]);
+
+  useEffect(() => {
+    const next = runnableQueryUrl(initialUrl);
+    if (!next || autoRan.current === next) return;
+    // Set before the request so Strict Mode's second effect pass does not start another check.
+    autoRan.current = next;
+    void runCheck(next);
+  }, [initialUrl, runCheck]);
 
   useEffect(() => {
     if (phase !== "loading") return;
@@ -50,36 +145,9 @@ export function Checker() {
     }
   }, [phase, report]);
 
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+  function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const trimmed = url.trim();
-    if (!trimmed) {
-      setPhase("error");
-      setError("Paste the clinic website address first.");
-      return;
-    }
-    setStep(0);
-    setPhase("loading");
-    setError("");
-    setReport(null);
-    try {
-      const response = await fetch("/api/check", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ url: trimmed }),
-      });
-      const data = (await response.json().catch(() => null)) as (Report & { error?: string }) | null;
-      if (!response.ok || !data || typeof data.score !== "number") {
-        setPhase("error");
-        setError(data?.error || "We couldn't check that site. Try again in a moment.");
-        return;
-      }
-      setReport(data);
-      setPhase("done");
-    } catch {
-      setPhase("error");
-      setError("We couldn't check that site. Try again in a moment.");
-    }
+    void runCheck(url);
   }
 
   return (
@@ -114,16 +182,23 @@ export function Checker() {
                 value={url}
                 onChange={(event) => setUrl(event.target.value)}
                 disabled={phase === "loading"}
+                suppressHydrationWarning
                 className="h-12 rounded-full px-5 text-base md:text-base"
                 aria-describedby="url-help"
               />
               <Button
+                id="check-submit"
                 type="submit"
                 disabled={phase === "loading"}
                 className="h-12 rounded-full px-6 text-base"
               >
-                {phase === "loading" ? "Checking…" : "Check my site"}
-                {phase === "loading" ? null : <span aria-hidden="true">→</span>}
+                <span className="check-submit-label inline-flex items-center gap-1">
+                  {phase === "loading" ? "Checking…" : "Check my site"}
+                  {phase === "loading" ? null : <span aria-hidden="true">→</span>}
+                </span>
+                <span className="check-submit-busy hidden" aria-hidden="true">
+                  Checking…
+                </span>
               </Button>
             </div>
             <p id="url-help" className="mt-3 max-w-xl text-sm leading-relaxed text-muted-foreground">
@@ -132,19 +207,21 @@ export function Checker() {
             </p>
           </form>
 
-          {phase === "loading" ? (
-            <ol className="mt-6 space-y-2" aria-live="polite">
-              {STEPS.map((item, index) => (
-                <li
-                  key={item}
-                  className={index <= step ? "text-sm text-foreground" : "text-sm text-muted-foreground"}
-                >
-                  <span className="mr-2 text-gold">{index < step ? "✓" : index === step ? "…" : "·"}</span>
-                  {item}
-                </li>
-              ))}
-            </ol>
-          ) : null}
+          <ol
+            id="check-steps"
+            className={phase === "loading" ? "mt-6 space-y-2" : "mt-6 hidden space-y-2"}
+            aria-live="polite"
+          >
+            {STEPS.map((item, index) => (
+              <li
+                key={item}
+                className={index <= step ? "text-sm text-foreground" : "text-sm text-muted-foreground"}
+              >
+                <span className="mr-2 text-gold">{index < step ? "✓" : index === step ? "…" : "·"}</span>
+                {item}
+              </li>
+            ))}
+          </ol>
 
           {phase === "error" ? (
             <p className="mt-6 rounded-2xl border border-bad/40 bg-bad/10 px-4 py-3 text-sm leading-relaxed text-foreground" role="alert">
@@ -157,11 +234,11 @@ export function Checker() {
       <div className="mx-auto max-w-3xl px-5 py-12 sm:py-16">
         {report ? (
           <>
-            <ReportView report={report} />
+            <ReportView report={report} linkValue={shareUrl} />
             <LeadForm report={report} />
           </>
-        ) : (
-          <section>
+        ) : phase === "loading" ? null : (
+          <section id="check-overview">
             <h2 className="text-2xl font-semibold tracking-tight">What the check looks at</h2>
             <p className="mt-3 max-w-xl text-base leading-relaxed text-muted-foreground">
               Ten things that make a clinic site feel closed, hard to call, or out of date. Each one

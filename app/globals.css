@@ -137,3 +137,17 @@
     scroll-behavior: auto;
   }
 }
+
+/* Shown before hydration when /?url= is already a checkable address. */
+html[data-autocheck] #check-steps {
+  display: block !important;
+}
+html[data-autocheck] #check-overview {
+  display: none !important;
+}
+html[data-autocheck] .check-submit-label {
+  display: none !important;
+}
+html[data-autocheck] .check-submit-busy {
+  display: inline !important;
+}

@@ -1,6 +1,7 @@
-import { memo } from "react";
+import { memo, useEffect, useState } from "react";
 
 import type { CheckResult, CheckStatus, Report } from "@/lib/types";
+import { checkLinkPath } from "@/lib/url";
 
 function tone(status: CheckStatus): string {
   if (status === "pass") return "border-good/40 text-good";
@@ -105,7 +106,52 @@ function CheckRow({ item }: { item: CheckResult }) {
   );
 }
 
-export const ReportView = memo(function ReportView({ report }: { report: Report }) {
+function CopyCheckLink({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  async function onCopy() {
+    const link = `${window.location.origin}${checkLinkPath(value)}`;
+    try {
+      await navigator.clipboard.writeText(link);
+    } catch {
+      const field = document.createElement("textarea");
+      field.value = link;
+      field.setAttribute("readonly", "");
+      field.style.position = "fixed";
+      field.style.left = "-9999px";
+      document.body.append(field);
+      field.select();
+      const copiedOk = document.execCommand("copy");
+      field.remove();
+      if (!copiedOk) return;
+    }
+    setCopied(true);
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => void onCopy()}
+      className="mt-4 rounded-sm text-left text-sm text-muted-foreground underline decoration-border underline-offset-4 transition-colors hover:text-foreground hover:decoration-gold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
+    >
+      {copied ? "Link copied" : "Copy link to this check"}
+    </button>
+  );
+}
+
+export const ReportView = memo(function ReportView({
+  report,
+  linkValue,
+}: {
+  report: Report;
+  linkValue: string;
+}) {
   return (
     <section id="result" className="scroll-mt-6" aria-live="polite">
       <div className="rounded-3xl border border-border bg-card p-5 sm:p-7">
@@ -124,6 +170,7 @@ export const ReportView = memo(function ReportView({ report }: { report: Report 
             {report.scoreNote ? (
               <p className="mt-2 text-sm text-muted-foreground">{report.scoreNote}</p>
             ) : null}
+            {linkValue ? <CopyCheckLink value={linkValue} /> : null}
           </div>
         </div>
         {report.pages.length > 0 ? (
