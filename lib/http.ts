@@ -3,48 +3,14 @@ import { isIP } from "node:net";
 import tls from "node:tls";
 
 import type { SslReport } from "./types";
+import { CheckError } from "./url";
 
-export class CheckError extends Error {
-  status: number;
-
-  constructor(message: string, status = 400) {
-    super(message);
-    this.name = "CheckError";
-    this.status = status;
-  }
-}
+export { CheckError, normaliseUrl } from "./url";
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 DesignImpClinicChecker/1.0";
 
 const MAX_BYTES = 1_500_000;
-
-export function normaliseUrl(input: string): string {
-  const trimmed = input.trim();
-  if (!trimmed) {
-    throw new CheckError("Paste the clinic website address first.");
-  }
-  if (trimmed.length > 300) {
-    throw new CheckError("That address is too long.");
-  }
-  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
-    ? trimmed
-    : `https://${trimmed}`;
-  let url: URL;
-  try {
-    url = new URL(withScheme);
-  } catch {
-    throw new CheckError("That doesn't look like a website address.");
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new CheckError("Use a normal website address, starting with https://.");
-  }
-  if (!url.hostname.includes(".")) {
-    throw new CheckError("That doesn't look like a public website address.");
-  }
-  url.hash = "";
-  return url.toString();
-}
 
 function isBlockedIp(ip: string): boolean {
   const mapped = ip.toLowerCase().startsWith("::ffff:")
